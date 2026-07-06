@@ -82,6 +82,7 @@ spec:
                   rule: check-client-registered
                   result: ${RESULT}
                   message: "${MESSAGE}"
+                  source: keycloak-check
                   resources:
                     - apiVersion: apps/v1
                       kind: Deployment
