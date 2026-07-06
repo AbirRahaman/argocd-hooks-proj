@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hello-smoke-test
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: smoke-test
+          image: curlimages/curl:latest
+          command:
+            - sh
+            - -c
+            - |
+              if curl -sf http://hello; then
+                echo "OK: app is serving traffic"
+              else
+                echo "FAIL: app did not respond"
+                exit 1
+              fi
