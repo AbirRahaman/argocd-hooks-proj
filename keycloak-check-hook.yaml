@@ -1,0 +1,101 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-registration-check
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: compliance-checker
+      containers:
+        - name: check
+          image: alpine/k8s:1.27.16
+          env:
+            - name: KEYCLOAK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-credentials
+                  key: url
+            - name: KEYCLOAK_USER
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-credentials
+                  key: username
+            - name: KEYCLOAK_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-credentials
+                  key: password
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-credentials
+                  key: realm
+          command:
+            - sh
+            - -c
+            - |
+              APP_NAME="hello"
+              RESULT="fail"
+              MESSAGE="Client '${APP_NAME}' not found in realm '${KEYCLOAK_REALM}'"
+
+              echo "Authenticating with Keycloak at ${KEYCLOAK_URL}..."
+              if TOKEN_RESPONSE=$(curl -sf -X POST \
+                "${KEYCLOAK_URL}/realms/master/protocol/openid-connect/token" \
+                -H "Content-Type: application/x-www-form-urlencoded" \
+                -d "client_id=admin-cli&grant_type=password&username=${KEYCLOAK_USER}&password=${KEYCLOAK_PASS}"); then
+
+                TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+                if [ -n "$TOKEN" ]; then
+                  echo "Checking registration for client '${APP_NAME}'..."
+                  CLIENTS=$(curl -sf \
+                    "${KEYCLOAK_URL}/admin/realms/${KEYCLOAK_REALM}/clients?clientId=${APP_NAME}" \
+                    -H "Authorization: Bearer ${TOKEN}")
+
+                  if echo "$CLIENTS" | grep -q '"clientId"'; then
+                    RESULT="pass"
+                    MESSAGE="Client '${APP_NAME}' is registered in Keycloak realm '${KEYCLOAK_REALM}'"
+                  fi
+                else
+                  MESSAGE="Failed to parse access token from Keycloak response"
+                fi
+              else
+                MESSAGE="Failed to reach Keycloak at ${KEYCLOAK_URL}"
+              fi
+
+              echo "${RESULT}: ${MESSAGE}"
+              TIMESTAMP=$(date +%s)
+
+              kubectl apply -f - << EOF
+              apiVersion: wgpolicyk8s.io/v1alpha2
+              kind: PolicyReport
+              metadata:
+                name: keycloak-compliance
+                namespace: default
+              results:
+                - policy: keycloak-registration
+                  rule: check-client-registered
+                  result: ${RESULT}
+                  message: "${MESSAGE}"
+                  resources:
+                    - apiVersion: apps/v1
+                      kind: Deployment
+                      name: ${APP_NAME}
+                      namespace: default
+                  timestamp:
+                    nanos: 0
+                    seconds: ${TIMESTAMP}
+              summary:
+                pass: $([ "$RESULT" = "pass" ] && echo 1 || echo 0)
+                fail: $([ "$RESULT" = "fail" ] && echo 1 || echo 0)
+                warn: 0
+                error: 0
+                skip: 0
+              EOF
+
+              [ "$RESULT" = "pass" ]
